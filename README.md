@@ -2,6 +2,8 @@
 
 GUI application to emit automated key press events based on user-provided text.
 
+<img src="./show.png">
+
 ## Quick start
 
 1. Create and activate a Python environment (recommended):

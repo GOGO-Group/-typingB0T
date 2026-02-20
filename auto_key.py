@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """PyQt6 GUI for auto key presser."""
+import utils.transport
+import utils.session
 import sys
 import threading
 import time
