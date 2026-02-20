@@ -1,1 +1,0 @@
-python auto_key.py --interval 0.001

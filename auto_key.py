@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QSpinBox, QComboBox, QCheckBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QEvent
 try:
     from pynput.keyboard import Controller, Key
 except ImportError:
@@ -23,6 +23,15 @@ class KeyEmitter(QObject):
         super().__init__()
         self.controller = Controller()
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()   # set = paused
+
+    def _wait_if_paused(self):
+        """Block while pause_event is set (app is focused). Return False if stopped."""
+        while self.pause_event.is_set():
+            if self.stop_event.is_set():
+                return False
+            time.sleep(0.05)
+        return True
 
     def emit_text(self, text: str, interval: float, newline_mode: str, remove_whitespace: bool):
         """
@@ -35,6 +44,18 @@ class KeyEmitter(QObject):
             remove_whitespace: If True, strip leading/trailing whitespace from lines
         """
         self.stop_event.clear()
+        self.pause_event.clear()
+
+        # --- 3-second countdown ---
+        for s in range(3, 0, -1):
+            if self.stop_event.is_set():
+                self.status_changed.emit("Cancelled")
+                return
+            self.status_changed.emit(f"Starting in {s}...")
+            time.sleep(1)
+
+        self.status_changed.emit("Emitting...")
+
         lines = text.split('\n')
         
         if remove_whitespace:
@@ -52,6 +73,8 @@ class KeyEmitter(QObject):
                 for ch in line:
                     if self.stop_event.is_set():
                         break
+                    if not self._wait_if_paused():
+                        break
                     self.controller.press(ch)
                     self.controller.release(ch)
                     total_chars += 1
@@ -60,6 +83,8 @@ class KeyEmitter(QObject):
                 # Handle newline (except on last line)
                 if line_idx < len(lines) - 1:
                     if self.stop_event.is_set():
+                        break
+                    if not self._wait_if_paused():
                         break
                     
                     if newline_mode == 'shift+enter':
@@ -78,6 +103,14 @@ class KeyEmitter(QObject):
             self.status_changed.emit(f"Completed: {total_chars} chars in {elapsed:.1f}s")
         except Exception as e:
             self.status_changed.emit(f"Error: {e}")
+
+    def pause(self):
+        """Pause emitting."""
+        self.pause_event.set()
+
+    def resume(self):
+        """Resume emitting."""
+        self.pause_event.clear()
 
     def stop(self):
         """Signal the worker to stop."""
@@ -173,6 +206,22 @@ class AutoTypeApp(QMainWindow):
         
         return panel_widget
 
+    # --- Focus change: pause when app gains focus, resume when it loses focus ---
+    def changeEvent(self, event):
+        """Detect window activation/deactivation to pause/resume emitting."""
+        if event.type() == QEvent.Type.WindowStateChange or event.type() == QEvent.Type.ActivationChange:
+            if self.isActiveWindow():
+                # App gained focus -> pause
+                if self.is_emitting and self.emitter:
+                    self.emitter.pause()
+                    self.status_label.setText("Paused (app focused)")
+            else:
+                # App lost focus -> resume
+                if self.is_emitting and self.emitter:
+                    self.emitter.resume()
+                    self.status_label.setText("Emitting...")
+        super().changeEvent(event)
+
     def _on_emit_button_clicked(self):
         """Handle start/stop button click."""
         if self.is_emitting:
@@ -207,12 +256,12 @@ class AutoTypeApp(QMainWindow):
             
             self.is_emitting = True
             self.emit_button.setText("Stop Emitting")
-            self.status_label.setText("Emitting...")
+            # Status will be updated by the countdown in the worker thread
 
     def _on_status_changed(self, message: str):
         """Update status label from worker thread signal."""
         self.status_label.setText(message)
-        if "Completed" in message or "Error" in message:
+        if "Completed" in message or "Error" in message or "Cancelled" in message:
             self.is_emitting = False
             self.emit_button.setText("Start Emitting")
 
